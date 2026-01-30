@@ -6,29 +6,13 @@ import cma
 import grcwa
 from config import *
 
-
-'''
-After finding the resonance slope, this zeroes in on the resonance and fits the sqrt behaviour.
-
-'''
-
+# =========================================================
+# Wavelength range (µm)
+# =========================================================
+lambdas = np.linspace(1.5, 1.55, 20)
 
 # =========================================================
-# TARGET POLE LOCATION
-# =========================================================
-lambda0 = 1.526  # µm
-
-# =========================================================
-# WAVELENGTH GRID (DENSE NEAR POLE)
-# =========================================================
-lambdas = np.concatenate([
-    np.linspace(1.505, 1.522, 6),
-    np.linspace(1.522, 1.530, 14),  # dense near pole
-    np.linspace(1.530, 1.545, 6)
-])
-
-# =========================================================
-# MATERIAL MODEL ε(λ)
+# Material model ε(λ)
 # =========================================================
 def epsilon_lambda(wavelength, _cache={}):
     if "interp" not in _cache:
@@ -43,24 +27,39 @@ def epsilon_lambda(wavelength, _cache={}):
     n_val = _cache["interp"](wavelength)
     return n_val**2
 
-# =========================================================
-# CYLINDER ε-GRID
-# =========================================================
-def get_epgrids_cylinder(r, et, a):
-    x0 = np.linspace(0, a, Nx, endpoint=False)
-    y0 = np.linspace(0, a, Ny, endpoint=False)
-    x, y = np.meshgrid(x0, y0, indexing='ij')
-    x_c = x - a / 2
-    y_c = y - a / 2
-    mask = (x_c**2 + y_c**2) < r**2
-    epgrid = np.ones((Nx, Ny), dtype=complex) * eair
-    epgrid[mask] = et
-    return epgrid
 
 # =========================================================
-# RCWA SOLVER
+# 3×3 pixelated ε-grid
 # =========================================================
-def solver_system(f, r, h, hsio2, a):
+def get_epgrid_3x3(pattern, et, a):
+    pattern = np.array(pattern).reshape(3, 3)
+    pattern = (pattern > 0.5).astype(int)
+
+    epgrid = np.ones((Nx, Ny), dtype=complex) * eair
+
+    dx = a / 3
+    dy = a / 3
+
+    x = np.linspace(0, a, Nx, endpoint=False)
+    y = np.linspace(0, a, Ny, endpoint=False)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+
+    for i in range(3):
+        for j in range(3):
+            if pattern[i, j] == 1:
+                mask = (
+                    (X >= i * dx) & (X < (i + 1) * dx) &
+                    (Y >= j * dy) & (Y < (j + 1) * dy)
+                )
+                epgrid[mask] = et
+
+    return epgrid
+
+
+# =========================================================
+# RCWA solver
+# =========================================================
+def solver_system(f, pattern, h, hsio2, a):
 
     L1 = [a, 0]
     L2 = [0, a]
@@ -79,7 +78,7 @@ def solver_system(f, r, h, hsio2, a):
     obj.Add_LayerUniform(0.1, eair)
     obj.Init_Setup()
 
-    epgrid = get_epgrids_cylinder(r, es, a).flatten()
+    epgrid = get_epgrid_3x3(pattern, es, a).flatten()
     obj.GridLayer_geteps(epgrid)
 
     obj.MakeExcitationPlanewave(
@@ -89,7 +88,6 @@ def solver_system(f, r, h, hsio2, a):
     )
 
     ai, bi = obj.GetAmplitudes(which_layer=0, z_offset=0.0)
-
     k0 = np.where((obj.G[:, 0] == 0) & (obj.G[:, 1] == 0))[0][0]
     nV = obj.nG
 
@@ -98,104 +96,78 @@ def solver_system(f, r, h, hsio2, a):
     else:
         return bi[k0 + nV] / ai[k0 + nV]
 
+
 # =========================================================
-# PHASE COMPUTATION
+# Phase computation
 # =========================================================
 def compute_phase(params):
-    r, h, hsio2, a = params
+    pattern = params[:9]
+    h, hsio2, a = params[9:]
+
     phis = []
     for lam in lambdas:
-        f = 1 / lam
-        r00 = solver_system(f, r, h, hsio2, a)
+        r00 = solver_system(1 / lam, pattern, h, hsio2, a)
         phis.append(np.angle(r00))
+
     return np.unwrap(np.array(phis))
+
 
 # =========================================================
 # PARAMETER BOUNDS
 # =========================================================
-bounds = np.array([
-    [0.25, 0.35],   # r
-    [0.06, 0.3],   # h
-    [0.4, 0.65],   # hsio2
-    [0.60, 0.8]    # a
-])
+bounds = np.array(
+    [[0, 1]] * 9 +      # 9 pixel variables
+    [
+        [0.05, 0.40],  # h
+        [0.05, 0.60],  # hsio2
+        [0.45, 0.80]   # a
+    ]
+)
 
 def decode(x):
     x = np.clip(x, 0.0, 1.0)
     return bounds[:, 0] + x * (bounds[:, 1] - bounds[:, 0])
 
-# =========================================================
-# TARGET SQRT FUNCTION
-# =========================================================
-def sqrt_target(lams):
-    eps = 1e-4
-    return np.sqrt(np.maximum(lams - lambda0, eps))
 
 # =========================================================
-# LOSS FUNCTION: SQRT BRANCH POINT
+# LOSS FUNCTION
 # =========================================================
-def loss_sqrt_pole(x,
-                   w_fit=1.0,
-                   w_pole=3.0,
-                   w_amp=0.2):
+def loss_function(x, alpha=10.0, beta=0.0,gamma= 10):
 
     params = decode(x)
     phis = compute_phase(params)
 
-    # Phase offset irrelevant
-    idx0 = np.argmin(np.abs(lambdas - lambda0))
-    phis -= phis[idx0]
+    # Linear fit
+    A, B = np.polyfit(lambdas, phis, 1)
+    phi_fit = A * lambdas + B
 
-    # ---- 1. Fit sqrt law AWAY from pole ----
-    mask = lambdas > lambda0 + 0.003
-    tgt = sqrt_target(lambdas[mask])
+    rms = np.sqrt(np.mean((phis - phi_fit)**2))
+    d2phi = np.gradient(np.gradient(phis, lambdas), lambdas)
+    curvature = np.mean(d2phi**2)
 
-    A = np.dot(phis[mask], tgt) / np.dot(tgt, tgt)
-    fit_error = np.mean((phis[mask] - A * tgt)**2)
+    loss = -gamma*A**2 + alpha * rms + beta * curvature
 
-    # ---- 2. Enforce divergence at pole ----
-    dphi = np.gradient(phis, lambdas)
-    pole_strength = -np.abs(dphi[idx0])
-
-    # ---- 3. Penalize unphysical amplitudes ----
-    amp_penalty = 0.0
-    for lam in lambdas:
-        r00 = solver_system(1/lam, *params)
-        amp_penalty += max(0, np.abs(r00) - 1.2)**2
-
-    loss = (
-        w_fit * fit_error
-        + w_pole * pole_strength
-        + w_amp * amp_penalty
-    )
-
-    print(
-        f"fit={fit_error:.2e}, "
-        f"|dφ/dλ|@λ0={abs(dphi[idx0]):.2e}, "
-        f"LOSS={loss:.2e}"
-    )
-
+    print(f"A={A:.3f}, RMS={rms:.3e}, CURV={curvature:.3e}, LOSS={loss:.3f}")
     return loss
 
+
 # =========================================================
-# CMA INITIALIZATION (FROM YOUR LINEAR OPTIMUM)
+# CMA INITIALIZATION
 # =========================================================
-x0_phys = np.array([
-    0.2720562713701102,
-    0.23374715620688444,
-    0.5741390216475506,
-    0.7098414822089394
-])
+x0_phys = np.array(
+    [0.5] * 9 +      # initial pixel guess
+    [0.12, 0.30, 0.60]
+)
 
 x0 = (x0_phys - bounds[:, 0]) / (bounds[:, 1] - bounds[:, 0])
-sigma0 = 0.15
+sigma0 = 0.20
 
 es = cma.CMAEvolutionStrategy(
     x0,
     sigma0,
     {
         "popsize": 10,
-        "maxiter": 60,
+        "maxiter": 40,
         "verb_disp": 1
     }
 )
@@ -204,43 +176,53 @@ es = cma.CMAEvolutionStrategy(
 # CMA LOOP
 # =========================================================
 while not es.stop():
-    xs = es.ask()
-    losses = [loss_sqrt_pole(x) for x in xs]
-    es.tell(xs, losses)
+    solutions = es.ask()
+    losses = [loss_function(x) for x in solutions]
+    es.tell(solutions, losses)
 
 best_x = es.result.xbest
 best_params = decode(best_x)
 
-print("\n===== SQRT-POLE DESIGN =====")
-print("r     =", best_params[0])
-print("h     =", best_params[1])
-print("hsio2 =", best_params[2])
-print("a     =", best_params[3])
+print("\n===== CMA OPTIMUM =====")
+print("Pixel pattern (3×3):")
+print((best_params[:9] > 0.5).reshape(3, 3).astype(int))
+print("h     =", best_params[9])
+print("hsio2 =", best_params[10])
+print("a     =", best_params[11])
+
 
 # =========================================================
 # FINAL DIAGNOSTICS
 # =========================================================
 phis = compute_phase(best_params)
-dphi = np.gradient(phis, lambdas)
+A_opt, B_opt = np.polyfit(lambdas, phis, 1)
+phi_fit = A_opt * lambdas + B_opt
 
-plt.figure(figsize=(6,4))
+print("\n===== FINAL LINEAR FIT =====")
+print("A (rad/µm) =", A_opt)
+print("B (rad)    =", B_opt)
+print("RMS error  =", np.std(phis - phi_fit))
+
+
+# =========================================================
+# PLOTS
+# =========================================================
+plt.figure(figsize=(6, 4))
 plt.plot(lambdas, phis, 'o-', label="RCWA phase")
-plt.plot(lambdas, sqrt_target(lambdas) * np.max(phis), '--', label="√(λ−λ₀) ref")
-plt.axvline(lambda0, color='r', linestyle=':', label="λ₀")
+plt.plot(lambdas, phi_fit, '--', label="Linear fit")
 plt.xlabel("Wavelength (µm)")
-plt.ylabel("Phase (rad)")
-plt.title("Square-root phase dispersion with pole")
+plt.ylabel("Unwrapped phase (rad)")
+plt.title("CMA-optimized linear phase (3×3 geometry)")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
 plt.show()
 
-plt.figure(figsize=(6,4))
-plt.plot(lambdas, dphi, 'o-')
-plt.axvline(lambda0, color='r', linestyle=':')
+plt.figure(figsize=(6, 4))
+plt.plot(lambdas, phis - phi_fit, 'o-')
 plt.xlabel("Wavelength (µm)")
-plt.ylabel("dφ/dλ (rad/µm)")
-plt.title("Phase derivative (pole behavior)")
+plt.ylabel("Residual phase (rad)")
+plt.title("Deviation from linearity")
 plt.grid(True)
 plt.tight_layout()
 plt.show()

@@ -29,7 +29,7 @@ def solver_system(nG,L1,L2,f,theta,phi,hs,hsio2,Nx,Ny,p,s):
     obj.Add_LayerUniform(0.1,eair)
     
     for i in range(5):
-        obj.Add_LayerUniform(hs,es)
+        obj.Add_LayerUniform(hs,es1)
         obj.Add_LayerUniform(hsio2,esio2)
 
     obj.Add_LayerUniform(0.1,eair)

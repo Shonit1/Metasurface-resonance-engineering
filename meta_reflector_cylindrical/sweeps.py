@@ -93,36 +93,64 @@ def solver_system(f):
     r00 = b00 / a00
     
 
-    return r00, Ti[k0]
+    return r00, Ri[k0],Ti[k0]
 
 
 # ---------------------------------------------------------
 # Wavelength sweep
 # ---------------------------------------------------------
-wavelengths = np.linspace(1.2, 1.27, 40)   # microns
+wavelengths = np.linspace(1.4, 1.6, 200)   # microns
 phases = []
 reflectance = []
+transmittance = []
 
 for wl in wavelengths:
     f = 1 / wl
-    r00, R00 = solver_system(f)
+    r00, R00,T00 = solver_system(f)
     phases.append(np.angle(r00))
     reflectance.append(R00)
+    transmittance.append(T00)
 
+# unwrap in radians (important!)
 phases = np.unwrap(np.array(phases))
 reflectance = np.array(reflectance)
-
+transmittance = np.array(transmittance)
+# ---------------------------------------------------------
+# Convert phase to units of pi
+# ---------------------------------------------------------
+phases_pi = phases / np.pi
 
 # ---------------------------------------------------------
 # Plot
 # ---------------------------------------------------------
 plt.figure(figsize=(7, 5))
-#plt.plot(wavelengths, phases, lw=2)
-plt.plot(wavelengths, reflectance, 'r--', lw=2)
+plt.plot(wavelengths, phases_pi, lw=2)
 
 plt.xlabel("Wavelength (µm)")
-plt.ylabel("Phase (rad)")
+plt.ylabel("Phase (×π rad)")
 plt.title("Phase vs wavelength")
+plt.grid()
+# -------------------------------------------------
+# Proper π-based ticks with unique labels
+# -------------------------------------------------
+ymin = np.floor(phases_pi.min() * 2) / 2
+ymax = np.ceil(phases_pi.max() * 2) / 2
+yticks = np.arange(ymin, ymax + 0.5, 0.5)
+
+def pi_label(val):
+    if np.isclose(val, 0):
+        return "0"
+    elif np.isclose(val, 1):
+        return "π"
+    elif np.isclose(val, -1):
+        return "−π"
+    elif float(val).is_integer():
+        return f"{int(val)}π"
+    else:
+        num = int(2 * val)
+        return f"{num}/2π"
+
+plt.yticks(yticks, [pi_label(y) for y in yticks])
 
 plt.text(
     0.02, 0.05,
@@ -133,4 +161,22 @@ plt.text(
 
 plt.grid(True)
 plt.tight_layout()
+plt.show()
+
+
+plt.figure(figsize=(7, 5))
+plt.plot(wavelengths, reflectance, lw=2)
+
+plt.xlabel("Wavelength (µm)")
+plt.ylabel("Reflectance")
+plt.title("Reflectance vs wavelength")
+plt.show()
+
+
+plt.figure(figsize=(7, 5))
+plt.plot(wavelengths, transmittance, lw=2)
+
+plt.xlabel("Wavelength (µm)")
+plt.ylabel("Transmittance")
+plt.title("Transmittance vs wavelength")
 plt.show()
