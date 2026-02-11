@@ -9,7 +9,7 @@ from config import *
 # WAVELENGTH SWEEP RANGES (µm)
 # =========================================================
 lambdas_vis = np.linspace(0.70, 0.80, 120)
-lambdas_ir  = np.linspace(1.45, 1.55, 120)
+lambdas_ir  = np.linspace(1.49980, 1.50020, 120)
 
 # =========================================================
 # FIXED DBR DESIGN (DESIGNED AT 1.5 µm)
@@ -152,19 +152,19 @@ def sweep_geometry(p1, p2, h1, h2, hs, hsio2_spacer, a, lambdas):
 # =========================================================
 # DEFINE FIXED GEOMETRY (PASTE YOUR OPTIMIZED ONE HERE)
 # =========================================================
-p1 = [1,0,0,
-      0,0,1,
-      1,0,0]
-
-p2 = [1,0,1,
-      0,1,0,
+p1 = [0,0,0,
+      1,1,1,
       0,0,0]
 
-h1 = 0.350000
-h2 = 0.065435
-hs = 0.2000             # Si thickness in DBR
-hsio2_spacer = 0.299418    # SiO2 between patterned layers
-a = 0.100000
+p2 = [1,1,0,
+      0,1,1,
+      0,0,1]
+
+h1 = 0.19014648
+h2 = 0.07730069
+hs = 0.29039493   # Si thickness in DBR
+hsio2_spacer = 0.14386821  # SiO2 between patterned layers
+a = 1.4641
 
 print("\n=== SWEEPING FIXED GEOMETRY ===")
 print(f"h1={h1}, h2={h2}, hs={hs}, hsio2_spacer={hsio2_spacer}, a={a}")
@@ -186,7 +186,7 @@ phi_ir, R_ir, T_ir = sweep_geometry(
 # PLOTS
 # =========================================================
 plt.figure(figsize=(7,5))
-plt.plot(lambdas_vis, phi_vis, label="Phase (0.7–0.8 µm)")
+#plt.plot(lambdas_vis, phi_vis, label="Phase (0.7–0.8 µm)")
 plt.plot(lambdas_ir,  phi_ir,  label="Phase (1.45–1.55 µm)")
 plt.xlabel("Wavelength (µm)")
 plt.ylabel("Reflection Phase (rad)")
@@ -195,7 +195,7 @@ plt.grid(True)
 plt.show()
 
 plt.figure(figsize=(7,5))
-plt.plot(lambdas_vis, R_vis, label="R (0.7–0.8 µm)")
+#plt.plot(lambdas_vis, R_vis, label="R (0.7–0.8 µm)")
 plt.plot(lambdas_ir,  R_ir,  label="R (1.45–1.55 µm)")
 plt.xlabel("Wavelength (µm)")
 plt.ylabel("Reflectance")
@@ -204,7 +204,7 @@ plt.grid(True)
 plt.show()
 
 plt.figure(figsize=(7,5))
-plt.plot(lambdas_vis, T_vis, label="T (0.7–0.8 µm)")
+#plt.plot(lambdas_vis, T_vis, label="T (0.7–0.8 µm)")
 plt.plot(lambdas_ir,  T_ir,  label="T (1.45–1.55 µm)")
 plt.xlabel("Wavelength (µm)")
 plt.ylabel("Transmittance")

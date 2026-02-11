@@ -19,13 +19,13 @@ es = ns**2
 esio2 = nsio2**2
 eair = nair**2
 
-nG = 31
+nG = 101
 
 theta = np.pi/180 * 0
 phi = 0
 
-Nx = 120
-Ny = 120
+Nx = 300
+Ny = 300
 
 hs = w/(4*ns)
 hsio2 = 0.3

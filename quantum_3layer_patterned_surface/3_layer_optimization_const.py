@@ -1,221 +1,176 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from scipy.interpolate import interp1d
-import cma
 import grcwa
 from config import *
 
 # =========================================================
-# Wavelength range (µm) — narrowband for Huygens physics
+# GEOMETRY (YOUR OPTIMIZED ONE)
 # =========================================================
-lambdas = np.linspace(1.5, 1.55, 10)
+h1    = 0.284860
+h2    = 0.083065
+hs    = 0.298298
+hsio2 = 0.278357
+
+P1 = np.array([[0,0,0],[1,1,1],[0,0,0]])
+P2 = np.array([[1,1,0],[0,1,1],[0,0,1]])
+a_fixed = 1.4641
 
 # =========================================================
-# Material model ε(λ)
+# MATERIAL MODEL
 # =========================================================
 def epsilon_lambda(wavelength, _cache={}):
-    if "interp" not in _cache:
+    if "li" not in _cache:
         data = pd.read_csv("C:\\Users\\ASUS\\Downloads\\Li-293K.csv")
-        wl = data.iloc[:, 0].values
-        n = data.iloc[:, 1].values
-        _cache["interp"] = interp1d(
-            wl, n, kind="cubic",
+        _cache["li"] = interp1d(
+            data.iloc[:,0].values,
+            data.iloc[:,1].values,
+            kind="cubic",
             bounds_error=False,
             fill_value="extrapolate"
         )
-    n_val = _cache["interp"](wavelength)
-    return n_val**2
-
+    return _cache["li"](wavelength)**2
 
 # =========================================================
-# 3×3 pixelated ε-grid
+# 3×3 GRID
 # =========================================================
-def get_epgrid_3x3(pattern, et, a):
-    pattern = np.array(pattern).reshape(3, 3)
-    pattern = (pattern > 0.5).astype(int)
+def get_epgrid_3x3(pattern, eps, a):
+    ep = np.ones((Nx,Ny), dtype=complex) * eair
+    dx = dy = a/3
 
-    epgrid = np.ones((Nx, Ny), dtype=complex) * eair
-
-    dx = a / 3
-    dy = a / 3
-
-    x = np.linspace(0, a, Nx, endpoint=False)
-    y = np.linspace(0, a, Ny, endpoint=False)
-    X, Y = np.meshgrid(x, y, indexing="ij")
+    x = np.linspace(0,a,Nx,endpoint=False)
+    y = np.linspace(0,a,Ny,endpoint=False)
+    X,Y = np.meshgrid(x,y,indexing="ij")
 
     for i in range(3):
         for j in range(3):
-            if pattern[i, j] == 1:
-                mask = (
-                    (X >= i * dx) & (X < (i + 1) * dx) &
-                    (Y >= j * dy) & (Y < (j + 1) * dy)
-                )
-                epgrid[mask] = et
-
-    return epgrid
-
+            if pattern[i,j]:
+                ep[(X>=i*dx)&(X<(i+1)*dx)&
+                   (Y>=j*dy)&(Y<(j+1)*dy)] = eps
+    return ep
 
 # =========================================================
-# RCWA solver — TWO patterned silicon layers (Huygens)
+# RCWA SOLVERS
 # =========================================================
-def solver_system(f, pattern1, pattern2, h1, h2, hsio2, a):
+def solver_rt(lam):
+    eps_si = epsilon_lambda(lam)
 
-    es = epsilon_lambda(1 / f)
-    L1 = [a, 0]
-    L2 = [0, a]
-
-    obj = grcwa.obj(nG, L1, L2, f, theta, phi, verbose=0)
-
-    # Superstrate
-    obj.Add_LayerUniform(0.1, eair)
-
-    # Grid layer 1
-    obj.Add_LayerGrid(h1, Nx, Ny)
-
-    # Spacer
-    obj.Add_LayerUniform(hsio2, esio2)
-
-    # Grid layer 2
-    obj.Add_LayerGrid(h2, Nx, Ny)
-
-    # Substrate (air for now – true Huygens config)
-    obj.Add_LayerUniform(0.1, eair)
-
-    obj.Init_Setup()
-
-    # Build ε-grids
-    ep1 = get_epgrid_3x3(pattern1, es, a).flatten()
-    ep2 = get_epgrid_3x3(pattern2, es, a).flatten()
-
-    # 🔑 CRITICAL FIX: concatenate grids
-    obj.GridLayer_geteps(np.concatenate([ep1, ep2]))
-
-    obj.MakeExcitationPlanewave(
-        p_amp=1, p_phase=0,
-        s_amp=0, s_phase=0
+    obj = grcwa.obj(
+        nG, [a_fixed,0], [0,a_fixed],
+        1/lam, theta, phi, verbose=0
     )
 
-    ai, bi = obj.GetAmplitudes(which_layer=0, z_offset=0.0)
-    Ri,Ti = obj.RT_Solve(normalize = 1,byorder=1)
+    obj.Add_LayerUniform(0.1, eair)
+    obj.Add_LayerGrid(h1, Nx, Ny)
+    obj.Add_LayerUniform(hsio2, esio2)
+    obj.Add_LayerGrid(h2, Nx, Ny)
 
+    for _ in range(5):
+        obj.Add_LayerUniform(hs, eps_si)
+        obj.Add_LayerUniform(hsio2_dbr, esio2)
 
+    obj.Add_LayerUniform(0.1, eair)
+    obj.Init_Setup()
 
-    k0 = np.where((obj.G[:, 0] == 0) & (obj.G[:, 1] == 0))[0][0]
+    ep1 = get_epgrid_3x3(P1, eps_si, a_fixed).flatten()
+    ep2 = get_epgrid_3x3(P2, eps_si, a_fixed).flatten()
+    obj.GridLayer_geteps(np.concatenate([ep1, ep2]))
+
+    obj.MakeExcitationPlanewave(1,0,0,0)
+
+    ai, bi = obj.GetAmplitudes(which_layer=0, z_offset=0)
+    Ri, Ti = obj.RT_Solve(normalize=1, byorder=1)
+
+    k0 = np.where((obj.G[:,0]==0)&(obj.G[:,1]==0))[0][0]
     nV = obj.nG
 
-    if abs(ai[k0]) > abs(ai[k0 + nV]):
-        return bi[k0] / ai[k0],Ri,Ti
-    else:
-        return bi[k0 + nV] / ai[k0 + nV],Ri,Ti
+    r = bi[k0]/ai[k0] if abs(ai[k0]) > abs(ai[k0+nV]) else bi[k0+nV]/ai[k0+nV]
+    t = Ti[k0]
 
-
+    return r, t
 
 # =========================================================
-# Phase computation
+# STEP 1: COARSE SCAN (FIND TRUE RESONANCE)
 # =========================================================
-def compute_phase(params):
+lams_coarse = np.linspace(1.498, 1.502, 4001)
+R_coarse = []
 
-    pattern1 = params[0:9]
-    pattern2 = params[9:18]
-    h1, h2, hsio2, a = params[18:]
+for lam in lams_coarse:
+    r, _ = solver_rt(lam)
+    R_coarse.append(abs(r)**2)
 
-    phis = []
-    for lam in lambdas:
-        r00 = solver_system(
-            1 / lam,
-            pattern1, pattern2,
-            h1, h2, hsio2, a
-        )
-        phis.append(np.angle(r00))
+R_coarse = np.array(R_coarse)
+lam_res = lams_coarse[np.argmin(R_coarse)]
 
-    return np.unwrap(np.array(phis))
-
+print(f"✓ Found resonance at λ = {lam_res*1000:.6f} nm")
 
 # =========================================================
-# PARAMETER BOUNDS
+# STEP 2: ULTRA-FINE ZOOM (PICOMETER SCALE)
 # =========================================================
-bounds = np.array(
-    [[0, 1]] * 18 +     # 2 × (3×3) pixel patterns
-    [
-        [0.05, 0.35],  # h1
-        [0.05, 0.35],  # h2
-        [0.05, 0.40],  # spacer
-        [0.1, 0.7]   # lattice constant
-    ]
-)
+dlam_pm = 20          # ±20 pm window
+Npts    = 6001
 
-def decode(x):
-    x = np.clip(x, 0, 1)
-    return bounds[:, 0] + x * (bounds[:, 1] - bounds[:, 0])
+dlam_um = dlam_pm * 1e-6
+lams = np.linspace(lam_res-dlam_um, lam_res+dlam_um, Npts)
 
+R = []
+T = []
+phi = []
 
-# =========================================================
-# LOSS FUNCTION — Huygens condition
-# =========================================================
-def loss_function(x, gamma=20.0):
+for lam in lams:
+    r, t = solver_rt(lam)
+    R.append(abs(r)**2)
+    T.append(np.real(t))
+    phi.append(np.angle(r))
 
-    params = decode(x)
-    phis = compute_phase(params)
+R = np.array(R)
+T = np.array(T)
+phi = np.unwrap(np.array(phi))
 
-    A, B = np.polyfit(lambdas, phis, 1)
-    loss = A**2 
-
-    print(f"A={A:.3e}, LOSS={loss:.3e}")
-    return loss
-
+# Δλ in picometers (this is the key!)
+delta_pm = (lams - lam_res) * 1e6
+dphi_dlam = np.gradient(phi, delta_pm)
 
 # =========================================================
-# CMA INITIALIZATION
+# PLOTTING (THIS WILL LOOK BEAUTIFUL)
 # =========================================================
-x0_phys = np.array(
-    [0.5] * 18 +       # two half-filled patterns
-    [0.15, 0.15, 0.20, 0.60]
-)
+plt.figure(figsize=(14,8))
 
-x0 = (x0_phys - bounds[:, 0]) / (bounds[:, 1] - bounds[:, 0])
+plt.subplot(2,2,1)
+plt.plot(delta_pm, R)
+plt.xlabel("Δλ (pm)")
+plt.ylabel("Reflectance R")
+plt.title("Reflectance Dip")
+plt.grid(alpha=0.3)
 
-es = cma.CMAEvolutionStrategy(
-    x0,
-    0.25,
-    {
-        "popsize": 12,
-        "maxiter": 40,
-        "verb_disp": 1
-    }
-)
+plt.subplot(2,2,2)
+plt.plot(delta_pm, T)
+plt.xlabel("Δλ (pm)")
+plt.ylabel("Transmittance T")
+plt.title("Transmission Peak")
+plt.grid(alpha=0.3)
 
-# =========================================================
-# CMA LOOP
-# =========================================================
-while not es.stop():
-    xs = es.ask()
-    es.tell(xs, [loss_function(x) for x in xs])
+plt.subplot(2,2,3)
+plt.plot(delta_pm, phi)
+plt.xlabel("Δλ (pm)")
+plt.ylabel("Phase φ (rad)")
+plt.title("Reflection Phase Jump")
+plt.grid(alpha=0.3)
 
-best = decode(es.result.xbest)
+plt.subplot(2,2,4)
+plt.plot(delta_pm, np.abs(dphi_dlam))
+plt.xlabel("Δλ (pm)")
+plt.ylabel("|dφ/dλ|  (rad / pm)")
+plt.title("Phase Slope (Group Delay)")
+plt.yscale("log")
+plt.grid(alpha=0.3)
 
-# =========================================================
-# RESULTS
-# =========================================================
-print("\n===== HUYGGENS METASURFACE RESULT =====")
+plt.tight_layout()
+plt.savefig("BIC_zoom_pm_all_observables.png", dpi=300)
+plt.close()
 
-print("Pattern layer 1:")
-print((best[:9] > 0.5).reshape(3, 3).astype(int))
-
-print("Pattern layer 2:")
-print((best[9:18] > 0.5).reshape(3, 3).astype(int))
-
-print("h1 =", best[18])
-print("h2 =", best[19])
-print("spacer =", best[20])
-print("a =", best[21])
-
-phis = compute_phase(best)
-
-plt.figure()
-plt.plot(lambdas, phis, 'o-')
-plt.xlabel("Wavelength (µm)")
-plt.ylabel("Phase (rad)")
-plt.title("Two-layer Huygens metasurface phase")
-plt.grid(True)
-plt.show()
+print("✓ Saved: BIC_zoom_pm_all_observables.png")
